@@ -1,84 +1,136 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import glob
+import os
 
 # Configuración de la página
 st.set_page_config(page_title="GA Median String Dashboard", layout="wide")
-st.title("🧬 Dashboard de Resultados: Genetic Algorithm DoE")
+st.title("🧬 Dashboard de Resultados: Algoritmo Genético Asimétrico")
 
-# 1. Carga de datos
-@st.cache_data
-def load_data():
-    try:
-        return pd.DataFrame(pd.read_csv("resultados_completos.csv"))
-    except FileNotFoundError:
-        return pd.DataFrame()
-
-df = load_data()
-
-if df.empty:
-    st.error("No se encontró 'resultados_completos.csv'. Ejecuta primero el generador de CSV.")
+# ==========================================
+# 1. Búsqueda y Carga de Archivos
+# ==========================================
+# Buscar archivos CSV disponibles en la carpeta actual
+archivos_csv = glob.glob("*.csv")
+if not archivos_csv:
+    st.error("No se encontraron archivos CSV en el directorio. Asegúrate de tener los resultados aquí.")
     st.stop()
 
-# 2. Panel lateral (Sidebar) para Filtros Múltiples y Opciones de Consolidación
+st.sidebar.header("📁 Carga de Datos")
+archivo_sel = st.sidebar.selectbox("Selecciona el archivo de resultados:", archivos_csv)
+
+@st.cache_data
+def load_data(file_path):
+    df = pd.read_csv(file_path)
+    
+    # --- CORRECCIÓN DE PARÁMETROS ---
+    # Convertir Padres: Si viene como 2 (por 0.2), lo pasamos a 20; el 25 se queda en 25
+    if "Padres_Conf" in df.columns:
+        df["Padres_Conf"] = df["Padres_Conf"].apply(lambda x: 20 if float(x) == 2 else x)
+        
+    # Convertir Mutación: Corregir el 5 para que sea 0.5
+    if "Mutacion_Conf" in df.columns:
+        df["Mutacion_Conf"] = df["Mutacion_Conf"].apply(lambda x: 0.5 if float(x) == 5 else x)
+        
+    # Reconstruir Config_ID limpio (eliminando cualquier referencia al torneo K)
+    # Ej: "P20_M0.5"
+    if "Padres_Conf" in df.columns and "Mutacion_Conf" in df.columns:
+        df["Config_ID"] = "P" + df["Padres_Conf"].astype(str) + "_M" + df["Mutacion_Conf"].astype(str)
+        
+    return df
+
+@st.cache_data
+def load_referencias():
+    if os.path.exists("referencias.txt"):
+        try:
+            # engine='python' y sep=None permiten que pandas detecte automáticamente si son comas o tabulaciones
+            return pd.read_csv("referencias.txt", sep=None, engine='python')
+        except Exception:
+            return pd.DataFrame()
+    return pd.DataFrame()
+
+df_base = load_data(archivo_sel)
+df_refs = load_referencias()
+
+if df_base.empty:
+    st.error(f"El archivo {archivo_sel} está vacío o no se pudo leer.")
+    st.stop()
+
+# ==========================================
+# 2. Panel lateral (Sidebar)
+# ==========================================
+st.sidebar.markdown("---")
 st.sidebar.header("🎛️ Parámetros de Selección")
 
-# Filtro de Dataset (Selección única)
-datasets_disp = df["Dataset"].unique()
-dataset_sel = st.sidebar.selectbox("1. Selecciona el Dataset", datasets_disp)
+# Obtener lista ordenada de Datasets
+datasets_disp = sorted(df_base["Dataset"].unique())
+dataset_sel = st.sidebar.selectbox("1. Selecciona el Dataset de Análisis", datasets_disp)
 
-# Filtrar el df temporalmente por dataset
-df_filtered = df[df["Dataset"] == dataset_sel]
-
-# --- NUEVA OPCIÓN: Consolidación / Agrupación en los Filtros ---
+# Opciones de Visualización
 st.sidebar.markdown("---")
 st.sidebar.subheader("📐 Opciones de Visualización")
 modo_agrupacion = st.sidebar.radio(
-    "¿Cómo deseas agrupar las líneas en el gráfico?",
-    options=["Detallado (Por Configuración ID)", "Consolidado (Promedio de las selecciones)"]
+    "¿Cómo deseas agrupar la curva de convergencia?",
+    options=["Detallado (Por Configuración ID)", "Consolidado (Promedio global)"]
 )
 
-# Filtros Dinámicos
-padres_opts = list(df_filtered["Padres_Conf"].unique())
-padres_sel = st.sidebar.multiselect("2. Config. Padres", options=padres_opts, default=padres_opts)
+# Filtros Dinámicos (Sin el Torneo K)
+padres_opts = sorted(list(df_base["Padres_Conf"].unique()))
+padres_sel = st.sidebar.multiselect("2. Porcentaje de Padres (%)", options=padres_opts, default=padres_opts)
 
-torneo_opts = list(df_filtered["Torneo_K"].unique())
-torneo_sel = st.sidebar.multiselect("3. Torneo (K)", options=torneo_opts, default=torneo_opts)
+mutacion_opts = sorted(list(df_base["Mutacion_Conf"].unique()))
+mutacion_sel = st.sidebar.multiselect("3. Porcentaje de Mutación (%)", options=mutacion_opts, default=mutacion_opts)
 
-mutacion_opts = list(df_filtered["Mutacion_Conf"].unique())
-mutacion_sel = st.sidebar.multiselect("4. Mutación", options=mutacion_opts, default=mutacion_opts)
-
-# Aplicar los filtros base
-df_plot = df_filtered[
-    (df_filtered["Padres_Conf"].isin(padres_sel)) &
-    (df_filtered["Torneo_K"].isin(torneo_sel)) &
-    (df_filtered["Mutacion_Conf"].isin(mutacion_sel))
+# Filtrar el dataframe completo según los parámetros seleccionados
+df_filtered_global = df_base[
+    (df_base["Padres_Conf"].isin(padres_sel)) &
+    (df_base["Mutacion_Conf"].isin(mutacion_sel))
 ]
 
-st.sidebar.markdown("---")
-st.sidebar.info("💡 **Tip para el artículo:** Sitúa el cursor sobre la gráfica y haz clic en el icono de cámara (Download plot) para guardar un PNG.")
+# Filtrar específicamente para el dataset seleccionado (Para gráficas A y B)
+df_plot_dataset = df_filtered_global[df_filtered_global["Dataset"] == dataset_sel]
 
-# 3. Panel Principal de Gráficas
-if df_plot.empty:
+st.sidebar.markdown("---")
+st.sidebar.info("💡 **Tip para el artículo:** Sitúa el cursor sobre las gráficas y haz clic en el ícono de cámara para exportar en calidad PNG.")
+
+
+# ==========================================
+# 3. Panel Principal: Métricas Consolidadas
+# ==========================================
+if not df_plot_dataset.empty:
+    # Calcular tiempo total sumando el snapshot final de cada semilla y configuración (para el dataset seleccionado)
+    tiempo_por_ejecucion = df_plot_dataset.groupby(['Config_ID', 'Semilla'])['Tiempo_Segundos'].max()
+    tiempo_total_dataset = tiempo_por_ejecucion.sum()
+    
+    st.metric(
+        label=f"⏱️ Tiempo Total de Experimentación (Dataset {dataset_sel})", 
+        value=f"{tiempo_total_dataset:,.2f} Segundos",
+        help="Suma del tiempo final registrado por cada configuración y semilla del dataset seleccionado."
+    )
+    st.markdown("---")
+
+# ==========================================
+# 4. Panel Principal: Gráficas de Dataset
+# ==========================================
+if df_plot_dataset.empty:
     st.warning("No hay datos para esta combinación de filtros.")
 else:
     col1, col2 = st.columns(2)
     
     # -----------------------------------------------------
-    # GRÁFICA A: Convergencia (Generación vs Mejor Costo)
+    # GRÁFICA A: Convergencia (Dataset específico)
     # -----------------------------------------------------
     with col1:
-        st.subheader("📉 Curva de Convergencia (Mejor Individuo)")
+        st.subheader(f"📉 Convergencia (Dataset {dataset_sel})")
         
-        if modo_agrupacion == "Consolidado (Promedio de las selecciones)":
-            # Promediamos todas las configuraciones seleccionadas en una sola línea global
-            df_conv_plot = df_plot.groupby('Generacion', as_index=False)['Mejor_Costo_Medio'].mean()
-            df_conv_plot['Linea_Agrupada'] = f"Promedio Global (Dataset {dataset_sel})"
+        if modo_agrupacion == "Consolidado (Promedio global)":
+            df_conv_plot = df_plot_dataset.groupby('Generacion', as_index=False)['Mejor_Costo_Medio'].mean()
+            df_conv_plot['Linea_Agrupada'] = f"Promedio (Dataset {dataset_sel})"
             color_col = 'Linea_Agrupada'
             titulo_leyenda = "Agrupación"
         else:
-            # Agrupamos por configuración y generación (promediando las semillas de cada config)
-            df_conv_plot = df_plot.groupby(['Config_ID', 'Generacion'], as_index=False)['Mejor_Costo_Medio'].mean()
+            df_conv_plot = df_plot_dataset.groupby(['Config_ID', 'Generacion'], as_index=False)['Mejor_Costo_Medio'].mean()
             color_col = 'Config_ID'
             titulo_leyenda = "Configuración"
 
@@ -87,26 +139,24 @@ else:
             x="Generacion", 
             y="Mejor_Costo_Medio", 
             color=color_col,
-            title=f"Evolución del Costo para Dataset {dataset_sel}", # (Semillas eliminadas del título)
-            labels={"Generacion": "Generaciones", "Mejor_Costo_Medio": "Mejor Costo Promedio (Suma Edit Dist / N)"},
+            title=f"Evolución del Costo para Dataset {dataset_sel}",
+            labels={"Generacion": "Generaciones", "Mejor_Costo_Medio": "Mejor Costo Promedio"},
             markers=True
         )
         fig_conv.update_layout(template="plotly_white", hovermode="x unified", legend_title_text=titulo_leyenda)
-        st.plotly_chart(fig_conv, width='stretch')
+        st.plotly_chart(fig_conv, use_container_width=True)
 
     # -----------------------------------------------------
     # GRÁFICA B: Análisis del Tiempo vs Parámetros
     # -----------------------------------------------------
     with col2:
-        st.subheader("⏱️ Tiempo Total de Iteraciones")
+        st.subheader("⏱️ Tiempo Total por Ejecución")
         
-        # Obtenemos el tiempo final (máxima generación registrada) por cada ejecución independiente (Semilla + Config)
-        df_time = df_plot.groupby(['Config_ID', 'Semilla', 'Mutacion_Conf', 'Padres_Conf', 'Torneo_K'], as_index=False)['Tiempo_Segundos'].max()
+        df_time = df_plot_dataset.groupby(['Config_ID', 'Semilla', 'Mutacion_Conf', 'Padres_Conf'], as_index=False)['Tiempo_Segundos'].max()
         
-        # Selector interactivo para decidir qué parámetro evaluar en el eje X de la gráfica de tiempo
         parametro_x = st.selectbox(
-            "Evaluar cambio de tiempo en función de:",
-            options=["Config_ID", "Mutacion_Conf", "Padres_Conf", "Torneo_K"],
+            "Evaluar dispersión de tiempo en función de:",
+            options=["Config_ID", "Mutacion_Conf", "Padres_Conf"],
             index=0
         )
 
@@ -115,26 +165,57 @@ else:
             x=parametro_x, 
             y="Tiempo_Segundos", 
             color=parametro_x if parametro_x != "Config_ID" else "Config_ID",
-            title=f"Distribución del Tiempo Total según {parametro_x}",
+            title=f"Distribución del Tiempo Total según {parametro_x.replace('_Conf', '')}",
             labels={parametro_x: parametro_x.replace("_", " ").title(), "Tiempo_Segundos": "Tiempo Total (Segundos)"}
         )
         fig_time.update_layout(template="plotly_white", showlegend=(parametro_x != "Config_ID"))
-        st.plotly_chart(fig_time, width='stretch')
+        st.plotly_chart(fig_time, use_container_width=True)
 
-    # -----------------------------------------------------
-    # TABLA RESUMEN INFERIOR
-    # -----------------------------------------------------
-    st.markdown("---")
-    st.subheader("📋 Resumen Estadístico del Óptimo Alcanzado")
+# ==========================================
+# 5. Gráfica Global (Sumatoria Todos los Datasets)
+# ==========================================
+st.markdown("---")
+st.subheader("🌐 Convergencia Global Acumulada (Suma Datasets A - Z)")
+st.caption("Esta gráfica muestra la sumatoria del costo promedio alcanzado en todos los datasets simultáneamente para cada iteración.")
+
+if not df_filtered_global.empty:
+    # 1. Obtenemos el promedio de las distintas semillas para evitar duplicados en la suma
+    df_global_avg_seed = df_filtered_global.groupby(['Config_ID', 'Dataset', 'Generacion'], as_index=False)['Mejor_Costo_Medio'].mean()
     
-    # Tomar la última generación de cada experimento y calcular medias/desviaciones estándar
-    ultimas_gen = df_plot.sort_values("Generacion").groupby(['Config_ID', 'Semilla']).tail(1)
+    # 2. Sumamos transversalmente (a través de todos los Datasets) para la misma generación y configuración
+    df_global_sum = df_global_avg_seed.groupby(['Config_ID', 'Generacion'], as_index=False)['Mejor_Costo_Medio'].sum()
     
-    tabla_resumen = ultimas_gen.groupby("Config_ID").agg(
-        Media_Costo_Optimo=("Mejor_Costo_Medio", "mean"),
-        Std_Costo_Optimo=("Mejor_Costo_Medio", "std"),
-        Tiempo_Medio_Seg=("Tiempo_Segundos", "mean"),
-        Ejecuciones_Exitosas=("Semilla", "count")
-    ).reset_index()
-    
-    st.dataframe(tabla_resumen, width='stretch')
+    fig_global = px.line(
+        df_global_sum,
+        x="Generacion",
+        y="Mejor_Costo_Medio",
+        color="Config_ID",
+        title="Sumatoria Total de Costos por Generación",
+        labels={"Generacion": "Generaciones", "Mejor_Costo_Medio": "Sumatoria de Distancias Óptimas"},
+        markers=True
+    )
+    fig_global.update_layout(template="plotly_white", hovermode="x unified")
+    st.plotly_chart(fig_global, use_container_width=True)
+
+# ==========================================
+# 6. Tabla Comparativa vs Estado del Arte
+# ==========================================
+st.markdown("---")
+st.subheader("🏆 Comparativa de Mejores Resultados (Estado del Arte)")
+
+# Obtener el mínimo absoluto (mejor distancia) alcanzado para cada dataset entre las configs seleccionadas
+mejor_ga_absoluto = df_filtered_global.groupby('Dataset')['Mejor_Costo_Medio'].min().reset_index()
+mejor_ga_absoluto.rename(columns={'Mejor_Costo_Medio': 'Nuestro Algoritmo (Mejor Caso)'}, inplace=True)
+
+if not df_refs.empty:
+    # Validar que exista la columna 'Dataset' para poder hacer el cruce
+    if 'Dataset' in df_refs.columns:
+        # Fusionamos referencias con el mejor resultado nuestro
+        tabla_comparativa = pd.merge(mejor_ga_absoluto, df_refs, on='Dataset', how='left')
+        st.dataframe(tabla_comparativa, use_container_width=True)
+    else:
+        st.error("El archivo 'referencias.txt' se cargó, pero no tiene una columna llamada 'Dataset' para hacer la comparación.")
+        st.dataframe(mejor_ga_absoluto, use_container_width=True)
+else:
+    st.info("No se encontró el archivo 'referencias.txt'. Mostrando solo los mejores resultados alcanzados por nuestro algoritmo.")
+    st.dataframe(mejor_ga_absoluto, use_container_width=True)
