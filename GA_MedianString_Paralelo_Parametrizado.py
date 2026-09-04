@@ -77,8 +77,8 @@ FRECUENCIA_SNAPSHOT = args.frecuencia_snapshot
 PROPORCION = args.proporcion
 
 # Cotas de penalización asimétrica (Multiplicadores)
-COTA_INF_MULT = 0.70 # cambiar en dependencia de la distribución 
-COTA_SUP_MULT = 0.95 # cambiar en dependencia de la distribución
+COTA_INF_MULT = 0.70 # cambiar en dependencia de la distribución del dataset
+COTA_SUP_MULT = 1.30 # cambiar en dependencia de la distribución del dataset
 
 # =============================================================================
 # 2. CARGA DE DATOS ANTICIPADA (Necesaria para definir población y rutas)
